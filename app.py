@@ -203,7 +203,6 @@ def main():
             
             # First, try to extract info without downloading
             try:
-                from moviepy.editor import VideoFileClip
                 temp_ydl_opts = {
                     'quiet': True,
                     'no_warnings': True,
