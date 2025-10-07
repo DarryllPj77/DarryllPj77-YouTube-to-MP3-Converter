@@ -30,6 +30,35 @@ def clean_filename(filename):
     cleaned = re.sub(r'\s+', ' ', cleaned)
     return cleaned.strip()
 
+def validate_youtube_url(url):
+    """
+    Validate if URL is a proper YouTube URL.
+    
+    Args:
+        url: URL string to validate
+    
+    Returns:
+        Tuple of (is_valid: bool, message: str)
+    """
+    # Check if it contains youtube.com or youtu.be
+    if "youtube.com" not in url and "youtu.be" not in url:
+        return False, "Not a YouTube URL"
+    
+    # Check for common YouTube URL patterns
+    patterns = [
+        r'youtube\.com/watch\?v=[\w-]+',
+        r'youtu\.be/[\w-]+',
+        r'youtube\.com/embed/[\w-]+',
+        r'youtube\.com/v/[\w-]+'
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, url):
+            return True, "Valid"
+    
+    return False, "Invalid YouTube URL format"
+
+
 def download_youtube_audio(url, output_path, quality='192'):
     """
     Download YouTube video and convert to MP3.
@@ -46,7 +75,7 @@ def download_youtube_audio(url, output_path, quality='192'):
         # Create downloads folder if it doesn't exist
         output_path.mkdir(exist_ok=True)
         
-        # Configure yt-dlp options
+        # Configure yt-dlp options with better bot detection avoidance
         ydl_opts = {
             'format': 'bestaudio/best',  # Get best audio quality
             'postprocessors': [{
@@ -57,6 +86,21 @@ def download_youtube_audio(url, output_path, quality='192'):
             'outtmpl': str(output_path / '%(title)s.%(ext)s'),  # Output template
             'quiet': False,  # Show progress
             'no_warnings': False,
+            # Additional options to avoid 403 errors
+            'nocheckcertificate': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'referer': 'https://www.youtube.com/',
+            'extractor_retries': 3,
+            'fragment_retries': 3,
+            'skip_unavailable_fragments': True,
+            # Use cookies if available (helps with 403 errors)
+            'cookiefile': 'cookies.txt' if Path('cookies.txt').exists() else None,
+            # Additional options for restricted videos
+            'age_limit': None,  # Bypass age restrictions if possible
+            'geo_bypass': True,  # Try to bypass geographic restrictions
+            'geo_bypass_country': 'US',  # Pretend to be from US
+            # Optional: Add proxy if needed (uncomment and add your proxy)
+            # 'proxy': 'http://your-proxy-here:port',
         }
         
         # Download and convert
@@ -87,14 +131,22 @@ def download_youtube_audio(url, output_path, quality='192'):
         error_msg = str(e)
         
         # Provide user-friendly error messages
-        if "Video unavailable" in error_msg:
-            return False, "❌ Error: Video is unavailable or private", None
+        if "Video unavailable" in error_msg or "This video is unavailable" in error_msg:
+            return False, "❌ Error: Video is unavailable, private, or deleted. Try a different video.", None
+        elif "Sign in to confirm your age" in error_msg or "age" in error_msg.lower():
+            return False, "❌ Error: Age-restricted video. Cannot download without authentication.", None
+        elif "This video is not available" in error_msg:
+            return False, "❌ Error: Video not available in this region or on this platform.", None
         elif "Invalid URL" in error_msg or "Unsupported URL" in error_msg:
-            return False, "❌ Error: Invalid YouTube URL", None
-        elif "network" in error_msg.lower():
+            return False, "❌ Error: Invalid YouTube URL. Make sure it's a valid YouTube link.", None
+        elif "HTTP Error 403" in error_msg or "Forbidden" in error_msg:
+            return False, "❌ Error: Access forbidden. YouTube is blocking this request. Try updating yt-dlp or use a different video.", None
+        elif "HTTP Error 429" in error_msg:
+            return False, "❌ Error: Too many requests. Please wait a few minutes and try again.", None
+        elif "network" in error_msg.lower() or "Connection" in error_msg:
             return False, "❌ Error: Network connection issue. Check your internet.", None
         else:
-            return False, f"❌ Error: {error_msg}", None
+            return False, f"❌ Error: {error_msg[:200]}", None
 
 def main():
     """
@@ -135,17 +187,51 @@ def main():
             st.error("⚠️ Please enter a YouTube URL")
             return
         
-        if "youtube.com" not in youtube_url and "youtu.be" not in youtube_url:
-            st.error("⚠️ Please enter a valid YouTube URL")
+        # Validate YouTube URL format
+        is_valid, validation_msg = validate_youtube_url(youtube_url)
+        if not is_valid:
+            st.error(f"⚠️ {validation_msg}. Please enter a valid YouTube link.")
+            st.info("Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             return
         
         # Create downloads folder path
         downloads_path = Path("downloads")
         
         # Show progress
-        with st.spinner("🔄 Downloading video..."):
+        with st.spinner("🔄 Checking video availability..."):
             status_placeholder = st.empty()
-            status_placeholder.info("📥 Fetching video information...")
+            
+            # First, try to extract info without downloading
+            try:
+                from moviepy.editor import VideoFileClip
+                temp_ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                }
+                
+                with yt_dlp.YoutubeDL(temp_ydl_opts) as ydl:
+                    info = ydl.extract_info(youtube_url, download=False)
+                    if not info:
+                        st.error("❌ Unable to access video. It may be private, deleted, or restricted.")
+                        return
+                    
+                    video_title = info.get('title', 'Unknown')
+                    duration = info.get('duration', 0)
+                    
+                    # Check if video is too long (optional limit)
+                    if duration > 3600:  # 1 hour
+                        st.warning(f"⚠️ Video is {duration//60} minutes long. This may take a while...")
+                    
+                    status_placeholder.success(f"✅ Found: {video_title}")
+                    
+            except Exception as e:
+                st.error(f"❌ Cannot access video: {str(e)[:200]}")
+                st.info("💡 Try a different video or check if it's public and not age-restricted")
+                return
+            
+            status_placeholder.info("📥 Starting download and conversion...")
             
             # Perform download and conversion
             success, message, filepath = download_youtube_audio(
