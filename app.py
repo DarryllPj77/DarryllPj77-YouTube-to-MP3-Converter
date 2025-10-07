@@ -2,6 +2,7 @@
 # Install required libraries: pip install streamlit yt-dlp
 
 import streamlit as st
+from transformers import pipline
 import yt_dlp
 import os
 import re
@@ -307,3 +308,4 @@ def main():
 # Run the app
 if __name__ == "__main__":
     main()
+
